@@ -967,6 +967,16 @@ extern "C" const ggml_tensor * whisper_get_encoder_output(const whisper_context 
     return ctx && ctx->state ? ctx->state->embd_enc : nullptr;
 }
 
+// Diagnostic-only bridge for the reference cross-attention cache. The tensor is owned by
+// ctx->state and remains valid until the context is freed; this does not change inference.
+extern "C" const ggml_tensor * whisper_get_cross_k_cache(const whisper_context * ctx) {
+    return ctx && ctx->state ? ctx->state->kv_cross.k : nullptr;
+}
+
+extern "C" const ggml_tensor * whisper_get_cross_v_cache(const whisper_context * ctx) {
+    return ctx && ctx->state ? ctx->state->kv_cross.v : nullptr;
+}
+
 extern "C" int64_t whisper_get_encoder_build_time_us(const whisper_context * ctx) {
     return ctx && ctx->state ? ctx->state->t_encode_build_us : -1;
 }
