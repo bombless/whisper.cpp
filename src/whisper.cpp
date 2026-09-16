@@ -838,6 +838,8 @@ struct vad_time_mapping {
 struct whisper_state {
     int64_t t_sample_us = 0;
     int64_t t_encode_us = 0;
+    int64_t t_encode_build_us = 0;
+    int64_t t_encode_compute_us = 0;
     int64_t t_decode_us = 0;
     int64_t t_batchd_us = 0;
     int64_t t_prompt_us = 0;
@@ -958,6 +960,34 @@ struct whisper_context {
 
     std::string path_model; // populated by whisper_init_from_file_with_params()
 };
+
+// Diagnostic-only internal bridge. The returned tensor is owned by ctx->state and
+// is valid only while the context remains alive; this does not alter encoder state.
+extern "C" const ggml_tensor * whisper_get_encoder_output(const whisper_context * ctx) {
+    return ctx && ctx->state ? ctx->state->embd_enc : nullptr;
+}
+
+extern "C" int64_t whisper_get_encoder_build_time_us(const whisper_context * ctx) {
+    return ctx && ctx->state ? ctx->state->t_encode_build_us : -1;
+}
+
+extern "C" int64_t whisper_get_encoder_compute_time_us(const whisper_context * ctx) {
+    return ctx && ctx->state ? ctx->state->t_encode_compute_us : -1;
+}
+
+extern "C" const float * whisper_get_mel_data(const whisper_context * ctx, int64_t * elements, int * n_len, int * n_mel) {
+    if (!ctx || !ctx->state) return nullptr;
+    if (elements) *elements = static_cast<int64_t>(ctx->state->mel.n_len) * ctx->state->mel.n_mel;
+    if (n_len) *n_len = ctx->state->mel.n_len;
+    if (n_mel) *n_mel = ctx->state->mel.n_mel;
+    return ctx->state->mel.data.data();
+}
+
+extern "C" const float * whisper_get_encoder_input_data(const whisper_context * ctx, int64_t * elements) {
+    if (!ctx || !ctx->state || ctx->state->inp_mel.empty()) return nullptr;
+    if (elements) *elements = static_cast<int64_t>(ctx->state->inp_mel.size());
+    return ctx->state->inp_mel.data();
+}
 
 struct whisper_global {
     // We save the log callback globally
@@ -2397,6 +2427,8 @@ static bool whisper_encode_internal(
     ggml_abort_callback   abort_callback,
                    void * abort_callback_data) {
     const int64_t t_start_us = ggml_time_us();
+    wstate.t_encode_build_us = 0;
+    wstate.t_encode_compute_us = 0;
 
     // conv
     {
@@ -2470,16 +2502,20 @@ static bool whisper_encode_internal(
     if (!whisper_encode_external(wstate)) {
         auto & sched = wstate.sched_encode.sched;
 
+        const int64_t t_encode_build_start_us = ggml_time_us();
         ggml_cgraph * gf = whisper_build_graph_encoder(wctx, wstate);
 
         if (!ggml_backend_sched_alloc_graph(sched, gf)) {
             // should never happen as we pre-allocate the memory
             return false;
         }
+        wstate.t_encode_build_us = ggml_time_us() - t_encode_build_start_us;
 
+        const int64_t t_encode_compute_start_us = ggml_time_us();
         if (!ggml_graph_compute_helper(sched, gf, n_threads)) {
             return false;
         }
+        wstate.t_encode_compute_us = ggml_time_us() - t_encode_compute_start_us;
     }
 
     // cross
